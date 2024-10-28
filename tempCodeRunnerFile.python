@@ -1,0 +1,247 @@
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import confusion_matrix, classification_report, mean_squared_error
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.preprocessing import StandardScaler
+from scipy.sparse import csr_matrix, hstack
+from typing import Tuple, List
+import time
+from contextlib import contextmanager
+
+class Timer:
+    """Utility class to track execution times."""
+    def __init__(self):
+        self.times = {}
+        
+    @contextmanager
+    def track(self, name):
+        start = time.time()
+        yield
+        elapsed = time.time() - start
+        if name not in self.times:
+            self.times[name] = []
+        self.times[name].append(elapsed)
+        
+    def summary(self):
+        print("\nTiming Summary:")
+        for name, times in self.times.items():
+            avg = np.mean(times)
+            total = np.sum(times)
+            print(f"{name}: avg={avg:.2f}s, total={total:.2f}s")
+
+def analyze_dataset_distribution(df: pd.DataFrame, title: str) -> None:
+    """Analyze and visualize the distribution of ratings in a dataset."""
+    print(f"\n{title} Distribution Analysis:")
+    print("-" * 50)
+    
+    # Basic statistics
+    print("\nRating Distribution:")
+    dist = df['Score'].value_counts().sort_index()
+    print(dist)
+    
+    print("\nPercentages:")
+    pct = (dist / len(df) * 100).round(2)
+    print(pct)
+    
+    # Visualization
+    plt.figure(figsize=(10, 6))
+    sns.countplot(data=df, x='Score')
+    plt.title(f'Rating Distribution - {title}')
+    plt.xlabel('Rating')
+    plt.ylabel('Count')
+    plt.show()
+
+def analyze_predictions(y_true: np.ndarray, y_pred: np.ndarray, texts: List[str], title: str) -> None:
+    """Analyze model predictions in detail."""
+    print(f"\n{title} Prediction Analysis:")
+    print("-" * 50)
+    
+    # Create analysis DataFrame
+    analysis_df = pd.DataFrame({
+        'Actual': y_true,
+        'Predicted': y_pred,
+        'Predicted_Rounded': np.round(y_pred),
+        'Text': texts,
+        'Error': y_pred - y_true,
+        'Absolute_Error': np.abs(y_pred - y_true)
+    })
+    
+    # Basic metrics
+    print("\nError Metrics:")
+    print(f"Mean Absolute Error: {analysis_df['Absolute_Error'].mean():.3f}")
+    print(f"RMSE: {np.sqrt(mean_squared_error(y_true, y_pred)):.3f}")
+    
+    # Confusion Matrix
+    cm = confusion_matrix(np.round(y_true), np.round(y_pred))
+    plt.figure(figsize=(10, 8))
+    sns.heatmap(cm, annot=True, fmt='d', cmap='Blues')
+    plt.title(f'Confusion Matrix - {title}')
+    plt.ylabel('True Rating')
+    plt.xlabel('Predicted Rating')
+    plt.show()
+    
+    # Error distribution
+    plt.figure(figsize=(15, 5))
+    
+    plt.subplot(1, 2, 1)
+    sns.histplot(data=analysis_df['Error'], bins=50)
+    plt.title('Distribution of Prediction Errors')
+    plt.xlabel('Error (Predicted - Actual)')
+    
+    plt.subplot(1, 2, 2)
+    sns.boxplot(x='Actual', y='Error', data=analysis_df)
+    plt.title('Error Distribution by True Rating')
+    plt.xlabel('True Rating')
+    plt.ylabel('Error')
+    
+    plt.tight_layout()
+    plt.show()
+    
+    # Analyze worst predictions
+    print("\nWorst Predictions:")
+    worst_predictions = analysis_df.nlargest(5, 'Absolute_Error')
+    for _, row in worst_predictions.iterrows():
+        print(f"\nActual: {row['Actual']}, Predicted: {row['Predicted']:.2f}")
+        print(f"Text: {row['Text'][:200]}...")
+
+def load_and_prepare_data(file_path: str, train_size: int = 200000) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """Load and prepare the data, ensuring balanced training set."""
+    # Load data
+    df = pd.read_csv(file_path)
+    print(f"Loaded {len(df)} reviews")
+    
+    # Handle missing values
+    df['Score'] = pd.to_numeric(df['Score'], errors='coerce')
+    df = df.dropna(subset=['Score'])
+    
+    # Create balanced training set
+    train_samples = []
+    samples_per_rating = train_size // 5
+    used_indices = set()
+    
+    for rating in range(1, 6):
+        rating_df = df[df['Score'] == rating]
+        available_indices = set(rating_df.index) - used_indices
+        n_samples = min(samples_per_rating, len(available_indices))
+        sample_indices = np.random.choice(list(available_indices), n_samples, replace=False)
+        train_samples.append(df.loc[sample_indices])
+        used_indices.update(sample_indices)
+    
+    train_df = pd.concat(train_samples, ignore_index=True)
+    
+    # Create validation set from remaining data
+    remaining_df = df[~df.index.isin(used_indices)]
+    val_df = remaining_df.sample(n=min(10000, len(remaining_df)), random_state=42)
+    
+    return train_df, val_df
+
+def create_features(df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.Series]:
+    """Create features for model training."""
+    # Handle missing text data
+    df['Summary'] = df['Summary'].fillna('')
+    df['Text'] = df['Text'].fillna('')
+    df['CombinedText'] = df['Summary'] + ' ' + df['Text']
+    
+    # Create numerical features
+    features = pd.DataFrame()
+    
+    # Handle missing values in helpfulness scores
+    df['HelpfulnessNumerator'] = pd.to_numeric(df['HelpfulnessNumerator'], errors='coerce').fillna(0)
+    df['HelpfulnessDenominator'] = pd.to_numeric(df['HelpfulnessDenominator'], errors='coerce').fillna(1)
+    
+    # Calculate features
+    denominator = df['HelpfulnessDenominator'].replace(0, 1)
+    features['helpfulness_ratio'] = (df['HelpfulnessNumerator'] / denominator).clip(0, 1)
+    features['review_length'] = df['Text'].str.len()
+    features['summary_length'] = df['Summary'].str.len()
+    
+    return features, df['CombinedText']
+
+def main():
+    timer = Timer()
+    
+    with timer.track("Data Loading"):
+        train_df, val_df = load_and_prepare_data('train.csv')
+    
+    # Analyze distributions
+    analyze_dataset_distribution(train_df, "Training Set")
+    analyze_dataset_distribution(val_df, "Validation Set")
+    
+    with timer.track("Feature Creation"):
+        # Create features
+        train_numerical, train_text = create_features(train_df)
+        val_numerical, val_text = create_features(val_df)
+        
+        # Text features
+        vectorizer = TfidfVectorizer(
+            max_features=7500,
+            min_df=5,
+            max_df=0.95,
+            strip_accents='unicode',
+            lowercase=True,
+            stop_words='english'
+        )
+        train_text_features = vectorizer.fit_transform(train_text)
+        val_text_features = vectorizer.transform(val_text)
+        
+        # Scale numerical features
+        scaler = StandardScaler()
+        train_numerical_scaled = scaler.fit_transform(train_numerical)
+        val_numerical_scaled = scaler.transform(val_numerical)
+        
+        # Combine features
+        X_train = hstack([train_text_features, csr_matrix(train_numerical_scaled)])
+        X_val = hstack([val_text_features, csr_matrix(val_numerical_scaled)])
+        
+        y_train = train_df['Score'].values
+        y_val = val_df['Score'].values
+    
+    with timer.track("Model Training"):
+        # Train model
+        model = RandomForestRegressor(
+            n_estimators=100,
+            max_depth=15,
+            min_samples_split=5,
+            min_samples_leaf=2,
+            random_state=42,
+            n_jobs=-1
+        )
+        model.fit(X_train, y_train)
+    
+    with timer.track("Prediction Generation"):
+        # Generate predictions
+        train_pred = model.predict(X_train)
+        val_pred = model.predict(X_val)
+    
+    # Analyze predictions
+    analyze_predictions(y_train, train_pred, train_df['Text'].tolist(), "Training Set")
+    analyze_predictions(y_val, val_pred, val_df['Text'].tolist(), "Validation Set")
+    
+    # Feature importance analysis
+    feature_names = (
+        [f"text_{i}" for i in range(train_text_features.shape[1])] +
+        list(train_numerical.columns)
+    )
+    
+    importance = model.feature_importances_
+    feat_importance = pd.DataFrame({
+        'Feature': feature_names,
+        'Importance': importance
+    }).sort_values('Importance', ascending=False)
+    
+    plt.figure(figsize=(12, 6))
+    sns.barplot(data=feat_importance.head(20), x='Importance', y='Feature')
+    plt.title('Top 20 Most Important Features')
+    plt.xticks(rotation=45)
+    plt.tight_layout()
+    plt.show()
+    
+    # Print timing summary
+    timer.summary()
+
+if __name__ == "__main__":
+    main()
