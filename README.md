@@ -49,7 +49,7 @@ Consistently Poor: 126 movies (0.25%)
 Insufficient Reviews: 8,187 movies (16.39%)
 ```
 
-<img src="https://github.com/kobajgenti/cs506-midterm/blob/main/MRC.png" alt="Movie Raiting Scatter Plot" width="300"/>
+<img src="https://github.com/kobajgenti/cs506-midterm/blob/main/MRC.png" alt="Movie Raiting Scatter Plot" width="700"/>
 
 After spending hours fine-tuning these categories, I ended up abandoning this approach. Too many movies fell into the "Mixed Reviews" category, making the classification less useful than I'd hoped. Still, the effort wasn't wasted - it gave me insights that helped with user feature development.
 
@@ -179,7 +179,7 @@ Within one star: 98.72%
 Within two stars: 99.94%
 ```
 
-<img src="https://github.com/kobajgenti/cs506-midterm/blob/main/CM.png" alt="Confusion Matrix 88% accuracy" width="300"/>
+<img src="https://github.com/kobajgenti/cs506-midterm/blob/main/CM.png" alt="Confusion Matrix 88% accuracy" width="700"/>
 
 ## Other Ideas I Had
 
